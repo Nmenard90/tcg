@@ -26,20 +26,20 @@ import java.time.Instant
 trait StorageRepository:
   def findBoxesByUser(userId: String): Task[List[StorageBox]]
   def createBox(userId: String, name: String, kind: String, boxType: String, capacity: Int, color: String): Task[StorageBox]
-  def renameBox(id: String, name: String): Task[Unit]
-  def reorderBox(id: String, position: Int): Task[Unit]
+  def renameBox(userId: String, id: String, name: String): Task[Unit]
+  def reorderBox(userId: String, id: String, position: Int): Task[Unit]
 
   /** Cards in this box's drawers become unassigned, not deleted. */
-  def deleteBox(id: String): Task[Unit]
+  def deleteBox(userId: String, id: String): Task[Unit]
 
-  def createDrawer(boxId: String, name: String): Task[StorageDrawer]
-  def renameDrawer(id: String, name: String): Task[Unit]
-  def reorderDrawer(id: String, position: Int): Task[Unit]
+  def createDrawer(userId: String, boxId: String, name: String): Task[StorageDrawer]
+  def renameDrawer(userId: String, id: String, name: String): Task[Unit]
+  def reorderDrawer(userId: String, id: String, position: Int): Task[Unit]
 
   /** Cards in this drawer become unassigned, not deleted. */
-  def deleteDrawer(id: String): Task[Unit]
+  def deleteDrawer(userId: String, id: String): Task[Unit]
 
-  def findDrawerCards(drawerId: String): Task[List[OwnedCard]]
+  def findDrawerCards(userId: String, drawerId: String): Task[List[OwnedCard]]
   def findUnassignedCards(userId: String): Task[List[OwnedCard]]
 
   /** @return how many cards were actually moved. */
@@ -113,39 +113,57 @@ object StorageRepository:
                    """.update.run.void.transact(xa)
       yield StorageBox(id, userId, name, kind, boxType, capacity, color, nextPos, None, None, None, None, None, Nil, now, now)
 
-    def renameBox(id: String, name: String): Task[Unit] =
-      sql"UPDATE storage_boxes SET name = $name, updated_at = NOW() WHERE id = $id"
+    def renameBox(userId: String, id: String, name: String): Task[Unit] =
+      sql"UPDATE storage_boxes SET name = $name, updated_at = NOW() WHERE id = $id AND user_id = $userId"
         .update.run.void.transact(xa)
 
-    def reorderBox(id: String, position: Int): Task[Unit] =
-      sql"UPDATE storage_boxes SET position = $position, updated_at = NOW() WHERE id = $id"
+    def reorderBox(userId: String, id: String, position: Int): Task[Unit] =
+      sql"UPDATE storage_boxes SET position = $position, updated_at = NOW() WHERE id = $id AND user_id = $userId"
         .update.run.void.transact(xa)
 
-    def deleteBox(id: String): Task[Unit] =
-      sql"DELETE FROM storage_boxes WHERE id = $id".update.run.void.transact(xa)
+    def deleteBox(userId: String, id: String): Task[Unit] =
+      sql"DELETE FROM storage_boxes WHERE id = $id AND user_id = $userId".update.run.void.transact(xa)
 
-    def createDrawer(boxId: String, name: String): Task[StorageDrawer] =
-      for
-        nextPos <- sql"SELECT COALESCE(MAX(position) + 1, 0) FROM storage_drawers WHERE box_id = $boxId"
-                     .query[Int].unique.transact(xa)
-        id       = java.util.UUID.randomUUID().toString
-        now      = Instant.now()
-        _       <- sql"""
-                     INSERT INTO storage_drawers (id, box_id, name, position, created_at, updated_at)
-                     VALUES ($id, $boxId, $name, $nextPos, $now, $now)
-                   """.update.run.void.transact(xa)
-      yield StorageDrawer(id, boxId, name, nextPos, 0, now, now)
+    def createDrawer(userId: String, boxId: String, name: String): Task[StorageDrawer] =
+      val id  = java.util.UUID.randomUUID().toString
+      val now = Instant.now()
+      sql"""
+        WITH next_position AS (
+          SELECT COALESCE(MAX(d.position) + 1, 0) AS position
+          FROM storage_boxes b
+          LEFT JOIN storage_drawers d ON d.box_id = b.id
+          WHERE b.id = $boxId AND b.user_id = $userId
+          GROUP BY b.id
+        )
+        INSERT INTO storage_drawers (id, box_id, name, position, created_at, updated_at)
+        SELECT $id, $boxId, $name, position, $now, $now FROM next_position
+        RETURNING position
+      """.query[Int].option.transact(xa)
+        .someOrFail(new IllegalArgumentException("Box not found"))
+        .map(nextPos => StorageDrawer(id, boxId, name, nextPos, 0, now, now))
 
-    def renameDrawer(id: String, name: String): Task[Unit] =
-      sql"UPDATE storage_drawers SET name = $name, updated_at = NOW() WHERE id = $id"
+    def renameDrawer(userId: String, id: String, name: String): Task[Unit] =
+      sql"""
+        UPDATE storage_drawers d SET name = $name, updated_at = NOW()
+        FROM storage_boxes b
+        WHERE d.id = $id AND b.id = d.box_id AND b.user_id = $userId
+      """
         .update.run.void.transact(xa)
 
-    def reorderDrawer(id: String, position: Int): Task[Unit] =
-      sql"UPDATE storage_drawers SET position = $position, updated_at = NOW() WHERE id = $id"
+    def reorderDrawer(userId: String, id: String, position: Int): Task[Unit] =
+      sql"""
+        UPDATE storage_drawers d SET position = $position, updated_at = NOW()
+        FROM storage_boxes b
+        WHERE d.id = $id AND b.id = d.box_id AND b.user_id = $userId
+      """
         .update.run.void.transact(xa)
 
-    def deleteDrawer(id: String): Task[Unit] =
-      sql"DELETE FROM storage_drawers WHERE id = $id".update.run.void.transact(xa)
+    def deleteDrawer(userId: String, id: String): Task[Unit] =
+      sql"""
+        DELETE FROM storage_drawers d
+        USING storage_boxes b
+        WHERE d.id = $id AND b.id = d.box_id AND b.user_id = $userId
+      """.update.run.void.transact(xa)
 
     /**
      * Base SELECT shared by findDrawerCards/findUnassignedCards, extended
@@ -196,8 +214,17 @@ object StorageRepository:
           }
       }
 
-    def findDrawerCards(drawerId: String): Task[List[OwnedCard]] =
-      (ownedCardQuery ++ fr"WHERE ce.drawer_id = $drawerId ORDER BY ce.updated_at DESC")
+    def findDrawerCards(userId: String, drawerId: String): Task[List[OwnedCard]] =
+      (ownedCardQuery ++ fr"""
+        WHERE ce.user_id = $userId
+          AND ce.drawer_id = $drawerId
+          AND EXISTS (
+            SELECT 1 FROM storage_drawers d
+            JOIN storage_boxes b ON b.id = d.box_id
+            WHERE d.id = $drawerId AND b.user_id = $userId
+          )
+        ORDER BY ce.updated_at DESC
+      """)
         .query[(String, String, String, Instant, Option[String],
                 String, String, String, String, Option[String], Option[String],
                 String, String,
@@ -219,8 +246,13 @@ object StorageRepository:
     def assignCards(userId: String, cardIds: List[String], drawerId: String): Task[Int] =
       cardIds.traverse { cardId =>
         sql"""
-          UPDATE collection_entries SET drawer_id = $drawerId
-          WHERE user_id = $userId AND card_id = $cardId
+          UPDATE collection_entries ce SET drawer_id = $drawerId
+          WHERE ce.user_id = $userId AND ce.card_id = $cardId
+            AND EXISTS (
+              SELECT 1 FROM storage_drawers d
+              JOIN storage_boxes b ON b.id = d.box_id
+              WHERE d.id = $drawerId AND b.user_id = $userId
+            )
         """.update.run
       }.map(_.sum).transact(xa)
 

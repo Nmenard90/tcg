@@ -51,7 +51,7 @@ object ShelfService:
           case _ => None
       }
 
-    def reorder(userId: String, items: List[ShelfItem]): Task[Unit] = repo.reorder(items)
+    def reorder(userId: String, items: List[ShelfItem]): Task[Unit] = repo.reorder(userId, items)
 
   val layer: ZLayer[StorageService & BinderService & ShelfRepository, Nothing, ShelfService] =
     ZLayer.fromFunction(new Live(_, _, _))

@@ -66,8 +66,8 @@ object BinderRoutes:
     },
 
     Method.GET / "api" / "binders" / string("userId") / string("binderId") -> handler {
-      (_: String, binderId: String, _: Request) =>
-        ZIO.serviceWithZIO[BinderService](_.getBinder(binderId))
+      (userId: String, binderId: String, _: Request) =>
+        ZIO.serviceWithZIO[BinderService](_.getBinder(userId, binderId))
           .map {
             case Some(b) => Response.json(b.toJson)
             case None    => Response.notFound
@@ -76,16 +76,16 @@ object BinderRoutes:
     },
 
     Method.PUT / "api" / "binders" / string("userId") / string("binderId") -> handler {
-      (_: String, binderId: String, req: Request) =>
+      (userId: String, binderId: String, req: Request) =>
         (for
           body   <- req.body.asString
           parsed <- ZIO.fromEither(body.fromJson[UpdateBinderRequest])
                       .mapError(e => RuntimeException(s"Bad request: $e"))
           _      <- ZIO.foreach(parsed.name)(n =>
-                      ZIO.serviceWithZIO[BinderService](_.renameBinder(binderId, n))
+                      ZIO.serviceWithZIO[BinderService](_.renameBinder(userId, binderId, n))
                     )
           _      <- ZIO.foreach(parsed.coverImage)(url =>
-                      ZIO.serviceWithZIO[BinderService](_.setCover(binderId, url))
+                      ZIO.serviceWithZIO[BinderService](_.setCover(userId, binderId, url))
                     )
           _      <- ZIO.foreach(parsed.pocketSize)(s =>
                       ZIO.attempt(PocketSize.valueOf(s))
@@ -93,7 +93,7 @@ object BinderRoutes:
                           s"Invalid pocket size '$s'. Must be Four, Nine, or Twelve."
                         ))
                         .flatMap(size =>
-                          ZIO.serviceWithZIO[BinderService](_.resizeBinder(binderId, size))
+                          ZIO.serviceWithZIO[BinderService](_.resizeBinder(userId, binderId, size))
                         )
                     )
         yield Response.json("""{"ok": true}""")
@@ -101,21 +101,21 @@ object BinderRoutes:
     },
 
     Method.DELETE / "api" / "binders" / string("userId") / string("binderId") -> handler {
-      (_: String, binderId: String, _: Request) =>
-        ZIO.serviceWithZIO[BinderService](_.deleteBinder(binderId))
+      (userId: String, binderId: String, _: Request) =>
+        ZIO.serviceWithZIO[BinderService](_.deleteBinder(userId, binderId))
           .map(_ => Response.json("""{"ok": true}"""))
           .catchAll(e => ZIO.succeed(Response.internalServerError(e.getMessage)))
     },
 
     Method.PUT / "api" / "binders" / string("userId") / string("binderId") / "slot" / int("slotIndex") -> handler {
-      (_: String, binderId: String, slotIndex: Int, req: Request) =>
+      (userId: String, binderId: String, slotIndex: Int, req: Request) =>
         (for
           body   <- req.body.asString
           parsed <- ZIO.fromEither(body.fromJson[SlotRequest])
                       .mapError(e => RuntimeException(s"Bad request: $e"))
           _      <- parsed.cardId match
                       case None =>
-                        ZIO.serviceWithZIO[BinderService](_.removeCard(binderId, slotIndex))
+                        ZIO.serviceWithZIO[BinderService](_.removeCard(userId, binderId, slotIndex))
                       case Some(cardId) =>
                         // The client only sends id/name/image — BinderService.placeCard
                         // only persists those three fields, so the rest is left blank
@@ -123,7 +123,7 @@ object BinderRoutes:
                         val card = Card(cardId, "", parsed.cardName.getOrElse(""),
                                         "", None, None,
                                         CardImage(parsed.imageUrl.getOrElse(""), ""), None, None)
-                        ZIO.serviceWithZIO[BinderService](_.placeCard(binderId, slotIndex, card))
+                        ZIO.serviceWithZIO[BinderService](_.placeCard(userId, binderId, slotIndex, card))
         yield Response.json("""{"ok": true}""")
         ).catchAll(e => ZIO.succeed(Response.badRequest(e.getMessage)))
     }

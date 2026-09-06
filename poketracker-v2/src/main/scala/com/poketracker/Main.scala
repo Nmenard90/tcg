@@ -65,10 +65,13 @@ object Main extends ZIOAppDefault:
 
         appLayer    = coreServices ++ ripLayer ++ shelfLayer ++ SupabaseJwtVerifier.layer
 
-        // Public: no Supabase session required (catalog browsing, health check).
+        // Public: no Supabase session required (catalog browsing, health check,
+        // and the read-only rip-or-hold calculation). Catalog refresh/admin
+        // mutations intentionally have no mounted HTTP routes until a trusted
+        // admin authorization mechanism exists.
         publicRoutes    = Routes(Method.GET / "health" -> Handler.ok) ++
-                          CardRoutes.routes ++
-                          RipRoutes.routes
+                          CardRoutes.publicRoutes ++
+                          RipRoutes.verdictRoutes
 
         // Protected: AuthGuard verifies the caller's Supabase token, provisions/
         // loads their profile, and 403s any request whose path userId doesn't
@@ -79,6 +82,7 @@ object Main extends ZIOAppDefault:
                            StorageRoutes.routes ++
                            ShelfRoutes.routes ++
                            RoomRoutes.routes ++
+                           RipRoutes.sessionRoutes ++
                            AuthRoutes.routes) @@ AuthGuard.aspect
 
         allRoutes       = publicRoutes ++ protectedRoutes

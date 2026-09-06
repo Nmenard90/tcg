@@ -27,7 +27,7 @@ trait BinderService:
   def getBinders(userId: String): Task[List[Binder]]
 
   /** With every slot, for opening a binder to view/edit pages. */
-  def getBinder(id: String): Task[Option[Binder]]
+  def getBinder(userId: String, id: String): Task[Option[Binder]]
 
   def createBinder(
     userId:     String,
@@ -36,18 +36,18 @@ trait BinderService:
   ): Task[Binder]
 
   /** Replaces whatever was already in the slot, if anything. */
-  def placeCard(binderId: String, slotIndex: Int, card: Card): Task[Unit]
+  def placeCard(userId: String, binderId: String, slotIndex: Int, card: Card): Task[Unit]
 
-  def removeCard(binderId: String, slotIndex: Int): Task[Unit]
+  def removeCard(userId: String, binderId: String, slotIndex: Int): Task[Unit]
 
-  def renameBinder(id: String, name: String): Task[Unit]
+  def renameBinder(userId: String, id: String, name: String): Task[Unit]
 
-  def setCover(id: String, imageUrl: String): Task[Unit]
+  def setCover(userId: String, id: String, imageUrl: String): Task[Unit]
 
   /** Placed cards keep their slot index — pages just re-flow at the new pocket count. */
-  def resizeBinder(id: String, pocketSize: PocketSize): Task[Unit]
+  def resizeBinder(userId: String, id: String, pocketSize: PocketSize): Task[Unit]
 
-  def deleteBinder(id: String): Task[Unit]
+  def deleteBinder(userId: String, id: String): Task[Unit]
 
 object BinderService:
 
@@ -59,8 +59,8 @@ object BinderService:
     def getBinders(userId: String): Task[List[Binder]] =
       repo.findByUser(userId)
 
-    def getBinder(id: String): Task[Option[Binder]] =
-      repo.findById(id)
+    def getBinder(userId: String, id: String): Task[Option[Binder]] =
+      repo.findById(userId, id)
 
     def createBinder(userId: String, name: String, pocketSize: PocketSize): Task[Binder] =
       val binder = Binder(
@@ -79,12 +79,13 @@ object BinderService:
       )
       repo.create(binder) *> shelf.ensureExists(userId, "binder", binder.id) *> ZIO.succeed(binder)
 
-    def placeCard(binderId: String, slotIndex: Int, card: Card): Task[Unit] =
+    def placeCard(userId: String, binderId: String, slotIndex: Int, card: Card): Task[Unit] =
       ZIO.when(slotIndex < 0 || slotIndex >= MaxSlots)(
         ZIO.fail(new IllegalArgumentException(
           s"Slot index $slotIndex is out of range. Must be between 0 and ${MaxSlots - 1}."
         ))
       ) *> repo.updateSlot(
+        userId    = userId,
         binderId  = binderId,
         slotIndex = slotIndex,
         cardId    = Some(card.id),
@@ -92,8 +93,9 @@ object BinderService:
         imageUrl  = Some(card.images.small)
       )
 
-    def removeCard(binderId: String, slotIndex: Int): Task[Unit] =
+    def removeCard(userId: String, binderId: String, slotIndex: Int): Task[Unit] =
       repo.updateSlot(
+        userId    = userId,
         binderId  = binderId,
         slotIndex = slotIndex,
         cardId    = None,
@@ -101,19 +103,19 @@ object BinderService:
         imageUrl  = None
       )
 
-    def renameBinder(id: String, name: String): Task[Unit] =
+    def renameBinder(userId: String, id: String, name: String): Task[Unit] =
       ZIO.when(name.trim.isEmpty)(
         ZIO.fail(new IllegalArgumentException("Binder name cannot be empty"))
-      ) *> repo.updateName(id, name.trim)
+      ) *> repo.updateName(userId, id, name.trim)
 
-    def setCover(id: String, imageUrl: String): Task[Unit] =
-      repo.updateCover(id, imageUrl)
+    def setCover(userId: String, id: String, imageUrl: String): Task[Unit] =
+      repo.updateCover(userId, id, imageUrl)
 
-    def resizeBinder(id: String, pocketSize: PocketSize): Task[Unit] =
-      repo.updatePocketSize(id, pocketSize)
+    def resizeBinder(userId: String, id: String, pocketSize: PocketSize): Task[Unit] =
+      repo.updatePocketSize(userId, id, pocketSize)
 
-    def deleteBinder(id: String): Task[Unit] =
-      repo.delete(id) *> shelf.remove("binder", id)
+    def deleteBinder(userId: String, id: String): Task[Unit] =
+      repo.delete(userId, id) *> shelf.remove(userId, "binder", id)
 
   val layer: ZLayer[BinderRepository & ShelfRepository, Nothing, BinderService] =
     ZLayer.fromFunction(new Live(_, _))

@@ -21,6 +21,7 @@
 
 package com.poketracker.api
 
+import com.poketracker.models.User
 import com.poketracker.service.StorageService
 import zio.*
 import zio.http.*
@@ -42,7 +43,7 @@ object StorageRoutes:
   private case class AssignRequest(cardIds: List[String], drawerId: String)
   private given JsonDecoder[AssignRequest] = DeriveJsonDecoder.gen
 
-  val routes: Routes[StorageService, Nothing] = Routes(
+  val routes: Routes[StorageService & User, Nothing] = Routes(
 
     Method.GET / "api" / "storage" / string("userId") / "boxes" -> handler {
       (userId: String, _: Request) =>
@@ -68,16 +69,20 @@ object StorageRoutes:
           body   <- req.body.asString
           parsed <- ZIO.fromEither(body.fromJson[UpdateRequest])
                       .mapError(e => RuntimeException(s"Bad request: $e"))
+          user   <- ZIO.service[User]
           // ZIO.foreach over an Option: runs only if that field was sent.
-          _      <- ZIO.foreach(parsed.name)(n => ZIO.serviceWithZIO[StorageService](_.renameBox(boxId, n)))
-          _      <- ZIO.foreach(parsed.position)(p => ZIO.serviceWithZIO[StorageService](_.reorderBox(boxId, p)))
+          _      <- ZIO.foreach(parsed.name)(n => ZIO.serviceWithZIO[StorageService](_.renameBox(user.id, boxId, n)))
+          _      <- ZIO.foreach(parsed.position)(p => ZIO.serviceWithZIO[StorageService](_.reorderBox(user.id, boxId, p)))
         yield Response.json("""{"ok": true}""")
         ).catchAll(e => ZIO.succeed(Response.badRequest(e.getMessage)))
     },
 
     Method.DELETE / "api" / "storage" / "boxes" / string("boxId") -> handler {
       (boxId: String, _: Request) =>
-        ZIO.serviceWithZIO[StorageService](_.deleteBox(boxId))
+        (for
+          user <- ZIO.service[User]
+          _    <- ZIO.serviceWithZIO[StorageService](_.deleteBox(user.id, boxId))
+        yield ())
           .map(_ => Response.json("""{"ok": true}"""))
           .catchAll(e => ZIO.succeed(Response.internalServerError(e.getMessage)))
     },
@@ -88,7 +93,8 @@ object StorageRoutes:
           body   <- req.body.asString
           parsed <- ZIO.fromEither(body.fromJson[CreateDrawerRequest])
                       .mapError(e => RuntimeException(s"Bad request: $e"))
-          drawer <- ZIO.serviceWithZIO[StorageService](_.createDrawer(boxId, parsed.name))
+          user   <- ZIO.service[User]
+          drawer <- ZIO.serviceWithZIO[StorageService](_.createDrawer(user.id, boxId, parsed.name))
         yield Response.json(drawer.toJson).status(Status.Created)
         ).catchAll(e => ZIO.succeed(Response.badRequest(e.getMessage)))
     },
@@ -99,22 +105,29 @@ object StorageRoutes:
           body   <- req.body.asString
           parsed <- ZIO.fromEither(body.fromJson[UpdateRequest])
                       .mapError(e => RuntimeException(s"Bad request: $e"))
-          _      <- ZIO.foreach(parsed.name)(n => ZIO.serviceWithZIO[StorageService](_.renameDrawer(drawerId, n)))
-          _      <- ZIO.foreach(parsed.position)(p => ZIO.serviceWithZIO[StorageService](_.reorderDrawer(drawerId, p)))
+          user   <- ZIO.service[User]
+          _      <- ZIO.foreach(parsed.name)(n => ZIO.serviceWithZIO[StorageService](_.renameDrawer(user.id, drawerId, n)))
+          _      <- ZIO.foreach(parsed.position)(p => ZIO.serviceWithZIO[StorageService](_.reorderDrawer(user.id, drawerId, p)))
         yield Response.json("""{"ok": true}""")
         ).catchAll(e => ZIO.succeed(Response.badRequest(e.getMessage)))
     },
 
     Method.DELETE / "api" / "storage" / "drawers" / string("drawerId") -> handler {
       (drawerId: String, _: Request) =>
-        ZIO.serviceWithZIO[StorageService](_.deleteDrawer(drawerId))
+        (for
+          user <- ZIO.service[User]
+          _    <- ZIO.serviceWithZIO[StorageService](_.deleteDrawer(user.id, drawerId))
+        yield ())
           .map(_ => Response.json("""{"ok": true}"""))
           .catchAll(e => ZIO.succeed(Response.internalServerError(e.getMessage)))
     },
 
     Method.GET / "api" / "storage" / "drawers" / string("drawerId") / "cards" -> handler {
       (drawerId: String, _: Request) =>
-        ZIO.serviceWithZIO[StorageService](_.getDrawerCards(drawerId))
+        (for
+          user  <- ZIO.service[User]
+          cards <- ZIO.serviceWithZIO[StorageService](_.getDrawerCards(user.id, drawerId))
+        yield cards)
           .map(cards => Response.json(cards.toJson))
           .catchAll(e => ZIO.succeed(Response.internalServerError(e.getMessage)))
     },

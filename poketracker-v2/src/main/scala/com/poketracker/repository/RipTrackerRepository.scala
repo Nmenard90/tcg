@@ -3,13 +3,14 @@
  * (sealed products, their guaranteed contents/pull rates, and box-opening
  * sessions/packs/pulls). Migration 004 in sql/schema.sql.
  *
- * NOT WIRED INTO Main.scala YET. Migration 004 has not been run against
- * production — see AGENTS.md's migration-before-deploy rule. Every query
- * here fails with "relation does not exist" against the current live
- * schema. Do not add this repository's layer to Main.scala, and do not
- * route live traffic to it, until Migration 004 has actually been run.
+ * WIRED INTO Main.scala via RipTrackerService/RipRoutes.
+ * UNVERIFIED: whether Migration 004 has actually been run against the live
+ * Railway database — see AGENTS.md's migration-before-deploy rule. Every
+ * query here fails with "relation does not exist" if it hasn't. This was
+ * never confirmed even before this repository was wired in; confirm the
+ * migration has run before relying on this feature in production.
  *
- * USED BY: (future) RipTrackerService, once wired
+ * USED BY: RipTrackerService
  */
 
 package com.poketracker.repository
@@ -48,10 +49,15 @@ trait RipTrackerRepository:
     packCount:       Int
   ): Task[(RipSession, List[RipPack])]
 
-  def findSession(id: String): Task[Option[RipSession]]
+  /** Finds a session only when it belongs to the authenticated user. */
+  def findOwnedSession(id: String, userId: String): Task[Option[RipSession]]
 
-  /** The only path from a pack ID (what the pulls endpoint receives) back to a userId. */
-  def findSessionIdForPack(ripPackId: String): Task[Option[String]]
+  /** Resolves a pack through the named session and authenticated owner. */
+  def findOwnedSessionForPack(
+    ripSessionId: String,
+    ripPackId:    String,
+    userId:       String
+  ): Task[Option[RipSession]]
 
   def findPacksForSession(ripSessionId: String): Task[List[RipPack]]
   def findPullsForSession(ripSessionId: String): Task[List[Pull]]
@@ -178,11 +184,11 @@ object RipTrackerRepository:
         )
       )
 
-    def findSession(id: String): Task[Option[RipSession]] =
+    def findOwnedSession(id: String, userId: String): Task[Option[RipSession]] =
       sql"""
         SELECT id, user_id, sealed_product_id, status, created_at
         FROM rip_sessions
-        WHERE id = $id
+        WHERE id = $id AND user_id = $userId
       """
         .query[(String, String, String, String, Instant)]
         .option
@@ -192,12 +198,25 @@ object RipTrackerRepository:
         })
         .transact(xa)
 
-    def findSessionIdForPack(ripPackId: String): Task[Option[String]] =
+    def findOwnedSessionForPack(
+      ripSessionId: String,
+      ripPackId:    String,
+      userId:       String
+    ): Task[Option[RipSession]] =
       sql"""
-        SELECT rip_session_id FROM rip_packs WHERE id = $ripPackId
+        SELECT rs.id, rs.user_id, rs.sealed_product_id, rs.status, rs.created_at
+        FROM rip_sessions rs
+        JOIN rip_packs rp ON rp.rip_session_id = rs.id
+        WHERE rs.id = $ripSessionId
+          AND rs.user_id = $userId
+          AND rp.id = $ripPackId
       """
-        .query[String]
+        .query[(String, String, String, String, Instant)]
         .option
+        .map(_.map { case (id, ownerId, productId, status, createdAt) =>
+          val parsedStatus = if status == "completed" then RipSessionStatus.Completed else RipSessionStatus.InProgress
+          RipSession(id, ownerId, productId, parsedStatus, createdAt)
+        })
         .transact(xa)
 
     def findPacksForSession(ripSessionId: String): Task[List[RipPack]] =

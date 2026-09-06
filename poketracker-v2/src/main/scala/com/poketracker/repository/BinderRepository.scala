@@ -28,12 +28,13 @@ trait BinderRepository:
   def findByUser(userId: String): Task[List[Binder]]
 
   /** Full binder with every slot — used when a binder is actually opened. */
-  def findById(id: String): Task[Option[Binder]]
+  def findById(userId: String, id: String): Task[Option[Binder]]
 
   def create(binder: Binder): Task[Unit]
 
   /** `cardId = None` clears the slot; `Some` places that card. */
   def updateSlot(
+    userId:    String,
     binderId:  String,
     slotIndex: Int,
     cardId:    Option[String],
@@ -41,14 +42,14 @@ trait BinderRepository:
     imageUrl:  Option[String]
   ): Task[Unit]
 
-  def updateName(id: String, name: String): Task[Unit]
-  def updateCover(id: String, imageUrl: String): Task[Unit]
+  def updateName(userId: String, id: String, name: String): Task[Unit]
+  def updateCover(userId: String, id: String, imageUrl: String): Task[Unit]
 
   /** Slot indexes are untouched — pages simply re-flow to the new pockets-per-page. */
-  def updatePocketSize(id: String, pocketSize: PocketSize): Task[Unit]
+  def updatePocketSize(userId: String, id: String, pocketSize: PocketSize): Task[Unit]
 
   /** Slots cascade-delete via the schema's FK constraint. */
-  def delete(id: String): Task[Unit]
+  def delete(userId: String, id: String): Task[Unit]
 
 object BinderRepository:
 
@@ -69,12 +70,12 @@ object BinderRepository:
         })
         .transact(xa)
 
-    def findById(id: String): Task[Option[Binder]] =
+    def findById(userId: String, id: String): Task[Option[Binder]] =
       val binderQuery =
         sql"""
           SELECT id, user_id, name, pocket_size, cover_image, space_id, storage_unit_id,
                  shelf_index, shelf_position, created_at, updated_at
-          FROM binders WHERE id = $id
+          FROM binders WHERE id = $id AND user_id = $userId
         """
           .query[(String, String, String, String, Option[String], Option[String], Option[String], Option[Int], Option[Int], Instant, Instant)]
           .option
@@ -82,8 +83,9 @@ object BinderRepository:
       val slotsQuery =
         sql"""
           SELECT slot_index, card_id, card_name, image_url
-          FROM binder_slots
-          WHERE binder_id = $id
+          FROM binder_slots bs
+          JOIN binders b ON b.id = bs.binder_id
+          WHERE bs.binder_id = $id AND b.user_id = $userId
           ORDER BY slot_index
         """
           .query[(Int, Option[String], Option[String], Option[String])]
@@ -111,6 +113,7 @@ object BinderRepository:
         .update.run.void.transact(xa)
 
     def updateSlot(
+      userId:    String,
       binderId:  String,
       slotIndex: Int,
       cardId:    Option[String],
@@ -119,7 +122,9 @@ object BinderRepository:
     ): Task[Unit] =
       sql"""
         INSERT INTO binder_slots (binder_id, slot_index, card_id, card_name, image_url)
-        VALUES ($binderId, $slotIndex, $cardId, $cardName, $imageUrl)
+        SELECT b.id, $slotIndex, $cardId, $cardName, $imageUrl
+        FROM binders b
+        WHERE b.id = $binderId AND b.user_id = $userId
         ON CONFLICT (binder_id, slot_index) DO UPDATE SET
           card_id   = EXCLUDED.card_id,
           card_name = EXCLUDED.card_name,
@@ -129,31 +134,32 @@ object BinderRepository:
         // Bumps the binder's own updated_at in the same transaction, so
         // the shelf sorts by most-recently-touched binder.
         .flatMap { _ =>
-          sql"UPDATE binders SET updated_at = NOW() WHERE id = $binderId"
+          sql"UPDATE binders SET updated_at = NOW() WHERE id = $binderId AND user_id = $userId"
             .update.run.void
         }
         .transact(xa)
 
-    def updateName(id: String, name: String): Task[Unit] =
+    def updateName(userId: String, id: String, name: String): Task[Unit] =
       sql"""
-        UPDATE binders SET name = $name, updated_at = NOW() WHERE id = $id
+        UPDATE binders SET name = $name, updated_at = NOW() WHERE id = $id AND user_id = $userId
       """
         .update.run.void.transact(xa)
 
-    def updateCover(id: String, imageUrl: String): Task[Unit] =
+    def updateCover(userId: String, id: String, imageUrl: String): Task[Unit] =
       sql"""
-        UPDATE binders SET cover_image = $imageUrl, updated_at = NOW() WHERE id = $id
+        UPDATE binders SET cover_image = $imageUrl, updated_at = NOW() WHERE id = $id AND user_id = $userId
       """
         .update.run.void.transact(xa)
 
-    def updatePocketSize(id: String, pocketSize: PocketSize): Task[Unit] =
+    def updatePocketSize(userId: String, id: String, pocketSize: PocketSize): Task[Unit] =
       sql"""
-        UPDATE binders SET pocket_size = ${pocketSize.toString}, updated_at = NOW() WHERE id = $id
+        UPDATE binders SET pocket_size = ${pocketSize.toString}, updated_at = NOW()
+        WHERE id = $id AND user_id = $userId
       """
         .update.run.void.transact(xa)
 
-    def delete(id: String): Task[Unit] =
-      sql"DELETE FROM binders WHERE id = $id"
+    def delete(userId: String, id: String): Task[Unit] =
+      sql"DELETE FROM binders WHERE id = $id AND user_id = $userId"
         .update.run.void.transact(xa)
 
   val layer: ZLayer[Transactor[Task], Nothing, BinderRepository] =

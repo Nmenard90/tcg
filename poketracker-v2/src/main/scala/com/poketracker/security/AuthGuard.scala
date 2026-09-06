@@ -42,22 +42,27 @@ object AuthGuard:
   /** Resource segments where the very next path segment is always a userId. */
   private val userScopedResources = Set("binders", "collection", "spaces", "shelf")
 
+  /** Pure route classification kept package-visible so security-boundary
+   *  regression tests do not need to construct a live HTTP application. */
+  private[poketracker] def isPublicPath(method: Method, path: String): Boolean =
+    method == Method.OPTIONS || path == "/health" || path == "/api/sets" ||
+      path == "/api/search" || path.startsWith("/api/cards")
+
   private def isPublic(req: Request): Boolean =
-    if req.method == Method.OPTIONS then true // CORS preflight carries no auth header
-    else
-      val p = req.url.path.toString
-      p == "/health" || p == "/api/sets" || p == "/api/search" ||
-        p.startsWith("/api/cards") || p.startsWith("/api/admin")
+    isPublicPath(req.method, req.url.path.toString)
 
   /** None = no ownership check applies to this path (either it's not
    *  user-scoped, or it's the known-limitation case above). */
-  private def requiredOwnerUserId(req: Request): Option[String] =
-    val segs = req.url.path.toString.split("/").filter(_.nonEmpty).toList
+  private[poketracker] def requiredOwnerUserId(path: String): Option[String] =
+    val segs = path.split("/").filter(_.nonEmpty).toList
     segs match
       case "api" :: resource :: userId :: _ if userScopedResources.contains(resource) => Some(userId)
       case "api" :: "storage" :: seg :: _ if seg != "boxes" && seg != "drawers"        => Some(seg)
       case "api" :: "users" :: userId :: "location" :: Nil                             => Some(userId)
       case _ => None
+
+  private def requiredOwnerUserId(req: Request): Option[String] =
+    requiredOwnerUserId(req.url.path.toString)
 
   private def jsonError(status: Status, message: String): Response =
     Response(status = status, body = Body.fromString(s"""{"error":"${message.replace("\"", "'")}"}"""))

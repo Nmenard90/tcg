@@ -26,16 +26,16 @@ trait StorageService:
    *  see the class doc. Plain boxes ("box") start with none; the caller adds
    *  as many as they want via createDrawer. */
   def createBox(userId: String, name: String, kind: String, boxType: String, capacity: Int, color: String): Task[StorageBox]
-  def renameBox(id: String, name: String): Task[Unit]
-  def reorderBox(id: String, position: Int): Task[Unit]
-  def deleteBox(id: String): Task[Unit]
+  def renameBox(userId: String, id: String, name: String): Task[Unit]
+  def reorderBox(userId: String, id: String, position: Int): Task[Unit]
+  def deleteBox(userId: String, id: String): Task[Unit]
 
-  def createDrawer(boxId: String, name: String): Task[StorageDrawer]
-  def renameDrawer(id: String, name: String): Task[Unit]
-  def reorderDrawer(id: String, position: Int): Task[Unit]
-  def deleteDrawer(id: String): Task[Unit]
+  def createDrawer(userId: String, boxId: String, name: String): Task[StorageDrawer]
+  def renameDrawer(userId: String, id: String, name: String): Task[Unit]
+  def reorderDrawer(userId: String, id: String, position: Int): Task[Unit]
+  def deleteDrawer(userId: String, id: String): Task[Unit]
 
-  def getDrawerCards(drawerId: String): Task[List[OwnedCard]]
+  def getDrawerCards(userId: String, drawerId: String): Task[List[OwnedCard]]
   def getUnassignedCards(userId: String): Task[List[OwnedCard]]
 
   /**
@@ -67,28 +67,30 @@ object StorageService:
         _      <- ZIO.when(capacity < 0)(ZIO.fail(new IllegalArgumentException("Capacity cannot be negative")))
         box    <- repo.createBox(userId, name.trim, kind, boxType, capacity, color)
         _      <- shelf.ensureExists(userId, "box", box.id)
-        drawer <- ZIO.when(kind == "display_case")(repo.createDrawer(box.id, "Display"))
+        drawer <- ZIO.when(kind == "display_case")(repo.createDrawer(userId, box.id, "Display"))
       yield box.copy(drawers = drawer.toList)
 
-    def renameBox(id: String, name: String): Task[Unit] =
+    def renameBox(userId: String, id: String, name: String): Task[Unit] =
       ZIO.when(name.trim.isEmpty)(ZIO.fail(new IllegalArgumentException("Box name cannot be empty")))
-        *> repo.renameBox(id, name.trim)
+        *> repo.renameBox(userId, id, name.trim)
 
-    def reorderBox(id: String, position: Int): Task[Unit] = repo.reorderBox(id, position)
-    def deleteBox(id: String): Task[Unit] = repo.deleteBox(id) *> shelf.remove("box", id)
+    def reorderBox(userId: String, id: String, position: Int): Task[Unit] = repo.reorderBox(userId, id, position)
+    def deleteBox(userId: String, id: String): Task[Unit] =
+      repo.deleteBox(userId, id) *> shelf.remove(userId, "box", id)
 
-    def createDrawer(boxId: String, name: String): Task[StorageDrawer] =
+    def createDrawer(userId: String, boxId: String, name: String): Task[StorageDrawer] =
       ZIO.when(name.trim.isEmpty)(ZIO.fail(new IllegalArgumentException("Drawer name cannot be empty")))
-        *> repo.createDrawer(boxId, name.trim)
+        *> repo.createDrawer(userId, boxId, name.trim)
 
-    def renameDrawer(id: String, name: String): Task[Unit] =
+    def renameDrawer(userId: String, id: String, name: String): Task[Unit] =
       ZIO.when(name.trim.isEmpty)(ZIO.fail(new IllegalArgumentException("Drawer name cannot be empty")))
-        *> repo.renameDrawer(id, name.trim)
+        *> repo.renameDrawer(userId, id, name.trim)
 
-    def reorderDrawer(id: String, position: Int): Task[Unit] = repo.reorderDrawer(id, position)
-    def deleteDrawer(id: String): Task[Unit] = repo.deleteDrawer(id)
+    def reorderDrawer(userId: String, id: String, position: Int): Task[Unit] = repo.reorderDrawer(userId, id, position)
+    def deleteDrawer(userId: String, id: String): Task[Unit] = repo.deleteDrawer(userId, id)
 
-    def getDrawerCards(drawerId: String): Task[List[OwnedCard]] = repo.findDrawerCards(drawerId)
+    def getDrawerCards(userId: String, drawerId: String): Task[List[OwnedCard]] =
+      repo.findDrawerCards(userId, drawerId)
     def getUnassignedCards(userId: String): Task[List[OwnedCard]] = repo.findUnassignedCards(userId)
 
     def assignCards(userId: String, cardIds: List[String], drawerId: String): Task[AssignResult] =

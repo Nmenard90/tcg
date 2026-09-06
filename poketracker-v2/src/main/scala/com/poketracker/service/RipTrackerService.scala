@@ -9,10 +9,15 @@
  *   RipOrHoldEngine's math. This file only feeds RipOrHoldEngine real
  *   data — it never recalculates the math itself.
  *
- * NOT WIRED IN YET — stays off the live app until its DB migration has
- * been run against production.
+ * WIRED IN: RipRoutes.sessionRoutes (mutating) requires the authenticated
+ * User from AuthGuard; RipRoutes.verdictRoutes (read-only) stays public.
+ * UNVERIFIED: whether Migration 004 (sql/schema.sql, rip_sessions/rip_packs/
+ * pulls tables) has actually been run against the live Railway database —
+ * this was never confirmed even before this file was wired in, and every
+ * query here fails with "relation does not exist" if it hasn't. Confirm
+ * before relying on this feature in production.
  *
- * USED BY: (future) RipRoutes, once wired
+ * USED BY: RipRoutes
  */
 
 package com.poketracker.service
@@ -47,10 +52,16 @@ trait RipTrackerService:
    * collection (combining with any existing count in the same
    * condition), and reports whether it was a duplicate and/or completed the set.
    */
-  def recordPull(ripPackId: String, cardId: String, condition: String): Task[PullResult]
+  def recordPull(
+    userId:       String,
+    ripSessionId: String,
+    ripPackId:    String,
+    cardId:       String,
+    condition:    String
+  ): Task[PullResult]
 
   /** The full session recap for the review screen. */
-  def getRecap(ripSessionId: String): Task[Option[SessionRecap]]
+  def getRecap(userId: String, ripSessionId: String): Task[Option[SessionRecap]]
 
   /**
    * Builds the rip-or-hold verdict for a product. Every price gap is
@@ -119,10 +130,17 @@ object RipTrackerService:
       // every one of them.
       yield setCardIds.nonEmpty && setCardIds.subsetOf(ownedIds)
 
-    def recordPull(ripPackId: String, cardId: String, condition: String): Task[PullResult] =
+    def recordPull(
+      userId:       String,
+      ripSessionId: String,
+      ripPackId:    String,
+      cardId:       String,
+      condition:    String
+    ): Task[PullResult] =
       for
-        // A pack doesn't carry its own user — find it through the session it belongs to.
-        session    <- resolveSessionForPack(ripPackId)
+        // Resolve route session, pack, and owner together before any mutation.
+        session    <- ripRepo.findOwnedSessionForPack(ripSessionId, ripPackId, userId)
+                        .someOrFail(RuntimeException("Rip session or pack not found"))
 
         // Makes sure this card actually exists in our catalog before referencing it.
         _          <- cardSvc.ensureCached(List(cardId))
@@ -141,21 +159,8 @@ object RipTrackerService:
         complete   <- isSetComplete(session.userId, card.setId)
       yield PullResult(pull, alreadyOwnedBefore, complete)
 
-    /**
-     * Finds which session a pack belongs to. There's no direct "pack ->
-     * session" lookup elsewhere, so this does its own small query rather
-     * than adding one just for this single use.
-     */
-    private def resolveSessionForPack(ripPackId: String): Task[RipSession] =
-      for
-        sessionId <- ripRepo.findSessionIdForPack(ripPackId)
-                       .someOrFail(RuntimeException(s"Unknown rip pack: $ripPackId"))
-        session   <- ripRepo.findSession(sessionId)
-                       .someOrFail(RuntimeException(s"Pack $ripPackId points at a missing session $sessionId"))
-      yield session
-
-    def getRecap(ripSessionId: String): Task[Option[SessionRecap]] =
-      ripRepo.findSession(ripSessionId).flatMap {
+    def getRecap(userId: String, ripSessionId: String): Task[Option[SessionRecap]] =
+      ripRepo.findOwnedSession(ripSessionId, userId).flatMap {
         case None => ZIO.succeed(None)
         case Some(session) =>
           for

@@ -239,6 +239,19 @@ object RoomRepository:
             sql"""SELECT COUNT(*) FROM storage_drawers dr JOIN storage_boxes b ON b.id=dr.box_id
               WHERE dr.id=$d AND b.user_id=$userId""".query[Int].unique.flatMap(n =>
               if n == 1 then ().pure[ConnectionIO] else FC.raiseError(RuntimeException("Box drawer not found")))
+        _ <- binderSlotId match
+          case None => ().pure[ConnectionIO]
+          case Some(bs) =>
+            for
+              belongs <- sql"""SELECT COUNT(*) FROM binder_slots s
+                JOIN binders b ON b.id=s.binder_id
+                WHERE s.id=$bs AND b.user_id=$userId""".query[Int].unique
+              _ <- if belongs == 1 then ().pure[ConnectionIO]
+                   else FC.raiseError(RuntimeException("Binder slot not found"))
+              occupied <- sql"SELECT COUNT(*) FROM card_allocations WHERE binder_slot_id=$bs".query[Int].unique
+              _ <- if occupied == 0 then ().pure[ConnectionIO]
+                   else FC.raiseError(RuntimeException("That binder slot is already occupied"))
+            yield ()
         _ <- displaySlotId match
           case None => ().pure[ConnectionIO]
           case Some(ds) =>

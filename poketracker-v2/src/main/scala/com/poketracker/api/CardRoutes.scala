@@ -11,9 +11,10 @@
  *   GET /api/cards/id/:cardId              — single card by ID
  *   GET /api/cards/id/:cardId/price-history
  *   GET /api/search?q=name                 — search cards by name
- *   GET /api/admin/refresh/:setId          — force re-fetch a set from the API
- *   GET /api/admin/refresh-prices/:setId   — re-fetch prices only
- *   GET /api/admin/refresh-orphans         — repair owned-but-uncached cards
+ *
+ * Catalog refresh operations deliberately are not exposed over HTTP. The
+ * application has no trustworthy admin authorization mechanism yet, so
+ * mounting them for ordinary authenticated users would not be safe.
  */
 
 package com.poketracker.api
@@ -31,7 +32,7 @@ object CardRoutes:
 
   private val allowedSorts = Set("name", "price", "number", "artist", "set")
 
-  val routes: Routes[CardService, Nothing] = Routes(
+  val publicRoutes: Routes[CardService, Nothing] = Routes(
 
     Method.GET / "api" / "sets" -> handler {
       ZIO.serviceWithZIO[CardService](_.getSets)
@@ -82,23 +83,5 @@ object CardRoutes:
         ZIO.serviceWithZIO[CardService](_.searchCards(query))
           .map(cards => Response.json(cards.toJson))
           .catchAll(e => ZIO.succeed(Response.internalServerError(e.getMessage)))
-    },
-
-    Method.GET / "api" / "admin" / "refresh" / string("setId") -> handler { (setId: String, _: Request) =>
-      ZIO.serviceWithZIO[CardService](_.refreshSet(setId))
-        .map(_ => Response.json("""{"ok": true}"""))
-        .catchAll(e => ZIO.succeed(Response.internalServerError(e.getMessage)))
-    },
-
-    Method.GET / "api" / "admin" / "refresh-prices" / string("setId") -> handler { (setId: String, _: Request) =>
-      ZIO.serviceWithZIO[CardService](_.refreshPrices(setId))
-        .map(_ => Response.json("""{"ok": true}"""))
-        .catchAll(e => ZIO.succeed(Response.internalServerError(e.getMessage)))
-    },
-
-    Method.GET / "api" / "admin" / "refresh-orphans" -> handler { (_: Request) =>
-      ZIO.serviceWithZIO[CardService](_.refreshOrphans)
-        .map(n => Response.json(s"""{"setsRefreshed": $n}"""))
-        .catchAll(e => ZIO.succeed(Response.internalServerError(e.getMessage)))
     }
   )

@@ -25,11 +25,11 @@ trait ShelfRepository:
    *  a self-heal for any item that predates this table. */
   def ensureExists(userId: String, kind: String, refId: String): Task[Unit]
 
-  def remove(kind: String, refId: String): Task[Unit]
+  def remove(userId: String, kind: String, refId: String): Task[Unit]
 
   /** Client sends the whole new order; this just writes the positions —
    *  same shape as StorageRepository.reorderBox, one row at a time. */
-  def reorder(items: List[ShelfItem]): Task[Unit]
+  def reorder(userId: String, items: List[ShelfItem]): Task[Unit]
 
 object ShelfRepository:
 
@@ -48,26 +48,34 @@ object ShelfRepository:
         .transact(xa)
 
     def ensureExists(userId: String, kind: String, refId: String): Task[Unit] =
-      for
+      val id = java.util.UUID.randomUUID().toString
+      (for
         nextPos <- sql"SELECT COALESCE(MAX(position) + 1, 0) FROM shelf_items WHERE user_id = $userId"
-                     .query[Int].unique.transact(xa)
-        id       = java.util.UUID.randomUUID().toString
-        _       <- sql"""
-                     INSERT INTO shelf_items (id, user_id, kind, ref_id, position)
-                     VALUES ($id, $userId, $kind, $refId, $nextPos)
-                     ON CONFLICT (kind, ref_id) DO NOTHING
-                   """.update.run.void.transact(xa)
-      yield ()
+                     .query[Int].unique
+        // The polymorphic reference is admitted only when the target belongs
+        // to this same user. This keeps even internal callers fail-closed.
+        _ <- sql"""
+               INSERT INTO shelf_items (id, user_id, kind, ref_id, position)
+               SELECT $id, $userId, $kind, $refId, $nextPos
+               WHERE ($kind = 'box' AND EXISTS (
+                        SELECT 1 FROM storage_boxes WHERE id = $refId AND user_id = $userId
+                      ))
+                  OR ($kind = 'binder' AND EXISTS (
+                        SELECT 1 FROM binders WHERE id = $refId AND user_id = $userId
+                      ))
+               ON CONFLICT (kind, ref_id) DO NOTHING
+             """.update.run
+      yield ()).transact(xa)
 
-    def remove(kind: String, refId: String): Task[Unit] =
-      sql"DELETE FROM shelf_items WHERE kind = $kind AND ref_id = $refId"
+    def remove(userId: String, kind: String, refId: String): Task[Unit] =
+      sql"DELETE FROM shelf_items WHERE user_id = $userId AND kind = $kind AND ref_id = $refId"
         .update.run.void.transact(xa)
 
-    def reorder(items: List[ShelfItem]): Task[Unit] =
+    def reorder(userId: String, items: List[ShelfItem]): Task[Unit] =
       items.traverse { item =>
         sql"""
           UPDATE shelf_items SET position = ${item.position}
-          WHERE kind = ${item.kind} AND ref_id = ${item.refId}
+          WHERE user_id = $userId AND kind = ${item.kind} AND ref_id = ${item.refId}
         """.update.run
       }.void.transact(xa)
 
